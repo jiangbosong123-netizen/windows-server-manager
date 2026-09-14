@@ -127,6 +127,52 @@ function Update-Project([System.IO.DirectoryInfo]$Project) {
     Invoke-Compose $Project @("up", "-d", "--build", "--remove-orphans")
 }
 
+function Get-AutoDeployShortcut {
+    return Join-Path ([Environment]::GetFolderPath("Startup")) "Windows Server Auto Deploy.lnk"
+}
+
+function Test-AutoDeployRunning {
+    $pidFile = Join-Path $PSScriptRoot "logs\auto-deploy.pid"
+    if (-not (Test-Path $pidFile)) { return $false }
+    $watcherPid = 0
+    if (-not [int]::TryParse((Get-Content $pidFile -ErrorAction SilentlyContinue), [ref]$watcherPid)) {
+        return $false
+    }
+    return $null -ne (Get-Process -Id $watcherPid -ErrorAction SilentlyContinue)
+}
+
+function Enable-AutoDeploy {
+    $shortcutPath = Get-AutoDeployShortcut
+    $shell = New-Object -ComObject WScript.Shell
+    $shortcut = $shell.CreateShortcut($shortcutPath)
+    $shortcut.TargetPath = "powershell.exe"
+    $shortcut.Arguments = "-NoLogo -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$PSScriptRoot\auto-deploy.ps1`""
+    $shortcut.WorkingDirectory = $PSScriptRoot
+    $shortcut.Save()
+    if (-not (Test-AutoDeployRunning)) {
+        Start-Process powershell.exe -WindowStyle Hidden -ArgumentList @(
+            "-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "`"$PSScriptRoot\auto-deploy.ps1`"")
+        Start-Sleep -Seconds 2
+    }
+    Write-Host "Automatic deployment is enabled." -ForegroundColor Green
+    Write-Host "GitHub is checked every 5 minutes while this Windows user is signed in."
+}
+
+function Disable-AutoDeploy {
+    Remove-Item -Force (Get-AutoDeployShortcut) -ErrorAction SilentlyContinue
+    $pidFile = Join-Path $PSScriptRoot "logs\auto-deploy.pid"
+    if (Test-Path $pidFile) {
+        $watcherPid = 0
+        if ([int]::TryParse((Get-Content $pidFile -ErrorAction SilentlyContinue), [ref]$watcherPid)) {
+            $process = Get-CimInstance Win32_Process -Filter "ProcessId=$watcherPid" -ErrorAction SilentlyContinue
+            if ($process.CommandLine -like "*auto-deploy.ps1*") {
+                Stop-Process -Id $watcherPid -Force -ErrorAction SilentlyContinue
+            }
+        }
+    }
+    Write-Host "Automatic deployment is disabled." -ForegroundColor Yellow
+}
+
 if (-not (Ensure-Docker)) {
     Wait-ForUser
     exit 1
@@ -144,6 +190,10 @@ while ($true) {
     Write-Host "  5. Restart a project"
     Write-Host "  6. Show recent logs"
     Write-Host "  7. Update and deploy all projects"
+    Write-Host "  8. Enable automatic deployment"
+    Write-Host "  9. Disable automatic deployment"
+    $autoState = if (Test-AutoDeployRunning) { "enabled and running" } elseif (Test-Path (Get-AutoDeployShortcut)) { "enabled; starts at next login" } else { "disabled" }
+    Write-Host "     Automatic deployment: $autoState" -ForegroundColor DarkGray
     Write-Host "  0. Exit"
     Write-Host ""
     $choice = Read-Host "Choose an action"
@@ -156,6 +206,8 @@ while ($true) {
         "5" { $project = Select-Project; if ($project) { Invoke-Compose $project @("restart"); Wait-ForUser } }
         "6" { $project = Select-Project; if ($project) { Invoke-Compose $project @("logs", "--tail", "100"); Wait-ForUser } }
         "7" { foreach ($project in (Get-Projects)) { Update-Project $project }; Wait-ForUser }
+        "8" { Enable-AutoDeploy; Wait-ForUser }
+        "9" { Disable-AutoDeploy; Wait-ForUser }
         "0" { exit 0 }
         default { }
     }
