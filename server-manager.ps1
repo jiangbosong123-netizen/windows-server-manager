@@ -24,12 +24,19 @@ function Get-Projects {
 function Invoke-Compose([System.IO.DirectoryInfo]$Project, [string[]]$Arguments) {
     Write-Host ""
     Write-Host "[$($Project.Name)] docker compose $($Arguments -join ' ')" -ForegroundColor Cyan
+    $previousVersion = $env:APP_VERSION
+    $gitDirectory = Join-Path $Project.FullName ".git"
+    if (Test-Path $gitDirectory) {
+        $revision = (& git -C $Project.FullName rev-parse --short=12 HEAD).Trim()
+        if ($LASTEXITCODE -eq 0 -and $revision) { $env:APP_VERSION = $revision }
+    }
     Push-Location $Project.FullName
     try {
         & docker compose @Arguments
     }
     finally {
         Pop-Location
+        $env:APP_VERSION = $previousVersion
     }
 }
 
