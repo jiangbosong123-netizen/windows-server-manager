@@ -2,6 +2,9 @@
 
 这是 Windows 常驻电脑的独立项目管理器。它与 InfoHub 以及其他业务系统分开，自动识别同级目录中带有 Docker Compose 配置的项目。
 
+Mac 开发、GitHub PR、Windows 正式运行、Tailscale 访问及数据边界的完整约定见
+[Mac 与 Windows Server 协作说明](docs/MAC-WINDOWS-WORKFLOW.md)。
+
 建议目录结构：
 
 ```text
