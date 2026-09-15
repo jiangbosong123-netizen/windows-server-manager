@@ -1,50 +1,76 @@
 # Windows Server Manager
 
-这是 Windows 常驻电脑的独立项目管理器。它与 InfoHub 以及其他业务系统分开，自动识别同级目录中带有 Docker Compose 配置的项目。
+这是 Windows 常驻电脑上的独立发布管理器。它不保存 InfoHub 业务数据，也不参与信息处理；
+它只把 GitHub `main` 上通过指定检查的固定提交，安全地发布成 Docker 服务。
 
-Mac 开发、GitHub PR、Windows 正式运行、Tailscale 访问及数据边界的完整约定见
-[Mac 与 Windows Server 协作说明](docs/MAC-WINDOWS-WORKFLOW.md)。
-
-建议目录结构：
+完整协作关系见 [Mac 与 Windows Server 协作说明](docs/MAC-WINDOWS-WORKFLOW.md)，发布状态、
+失败恢复和接入约束见 [部署状态机](docs/DEPLOYMENT-STATE-MACHINE.md)。
 
 ```text
 C:\Users\serveradmin\Server\
 ├── manager\          本仓库
-├── infohub\          InfoHub
-└── another-project\  以后的其他系统
+├── infohub\          InfoHub 的部署检出与正式数据目录
+└── another-project\  以后显式登记的其他系统
 ```
 
 ## 第一次安装
 
-1. 在 GitHub Desktop 中克隆本仓库。
-2. Local path 选择 `C:\Users\serveradmin\Server\manager`。
-3. 双击 `create-desktop-shortcut.cmd`，桌面会出现 **Windows Server Manager**。
+1. 在 GitHub Desktop 中把本仓库克隆到 `C:\Users\serveradmin\Server\manager`。
+2. 双击 `create-desktop-shortcut.cmd`，桌面会出现 **Windows Server Manager**。
+3. 检查 `projects.json` 中的项目路径、仓库、检查名称和健康接口。
+4. 打开管理器，先执行一次 **Check and deploy a project**；确认状态为 `healthy` 后再开启自动部署。
 
-以后双击桌面入口即可管理所有项目。管理器启动时会先尝试更新自己；没有网络时仍会使用现有版本打开。
+管理器启动时会尝试用 fast-forward 更新自己。离线时仍使用已有版本打开。
+
+## 发布规则
+
+项目必须显式登记在 `projects.json`；管理器不会扫描并运行任意相邻目录。每个登记项目都必须：
+
+- 只部署 `main`，且本地检出没有修改或分叉；
+- 指定 GitHub 仓库和全部必需检查；
+- 指定 Compose 项目、运行时文件和带版本字段的健康接口；
+- 使用不可变提交 SHA 构建镜像，并在连续健康检查通过后才记录为健康版本。
+
+每个项目的 `desiredSha`、`healthySha`、失败次数和下次重试时间保存在
+`manager\state\<project>.json`。同一提交构建失败后会按 5、15、30 分钟退避重试；连续三次
+失败会暂停，等待人工检查。自动和手动操作共用项目级互斥锁，不能重叠。
+
+部署先在隔离的 Git worktree 构建候选镜像，并给当前运行镜像保存独立回滚标签。只有候选
+构建成功后才移动正式检出。容器启动后必须连续通过配置的健康检查；失败会恢复旧检出和
+旧镜像。自动回滚失败时进入 `recovery_required`，后续自动操作停止。
 
 ## 菜单功能
 
-- 查看所有项目和容器状态
-- 拉取某个项目的最新代码并重新部署
-- 启动、停止或重启某个项目
-- 查看最近 100 行日志
-- 一次更新并部署全部项目
-- 开启或关闭后台自动部署
+- 查看登记项目、容器与发布状态；
+- 检查并发布一个或全部项目；
+- 按已记录的健康镜像启动、停止或重启项目；
+- 查看日志；
+- 开启或关闭后台自动部署。
 
-部署时会把项目当前的 Git 提交号传给 Docker。支持该字段的系统可以在健康页显示正在运行的准确版本。
+自动部署每 5 分钟检查一次。它只发起很小的 Git/GitHub 查询；没有新提交时不会构建镜像、
+调用模型或抓取新闻。锁屏不影响运行，但当前 Docker Desktop 方案要求 `serveradmin` 保持登录。
 
-## 自动部署
+## 数据和迁移
 
-在管理器中选择 **8. Enable automatic deployment** 一次即可。它会随 `serveradmin`
-登录 Windows 自动启动，每 5 分钟检查同级项目的 GitHub 分支。发现远端有新提交后，
-自动执行安全的 fast-forward 拉取并重新构建容器。锁屏不影响运行；需要保持该 Windows
-用户登录，Docker Desktop 和 Tailscale 正常运行。
+正式数据库、上传文件及 `.env` 留在各项目自己的目录，不进入本仓库或 GitHub。候选构建只
+复制项目配置中列出的运行时文件，不复制数据库。
 
-如果项目目录存在未提交的本地代码，或本地与 GitHub 分支分叉，自动部署会跳过该项目，
-避免覆盖文件。记录保存在 `manager\logs\auto-deploy.log`。菜单 9 可以关闭自动部署。
-
-项目数据和 `.env` 仍留在各自的项目目录中。停止项目不会删除数据。更新前如果发现业务代码有本地修改，管理器会取消拉取，防止覆盖文件。
+`migrationHook` 默认是 `null`。只有业务仓库已经提供备份、校验、幂等迁移，并确认旧镜像仍
+可读取迁移后结构时，才能配置 hook 且显式设置 `rollbackSafe: true`。接口存在不代表生产迁移
+已经获准；InfoHub 的真实迁移仍须按它自己的数据库规范演练。
 
 ## 新增系统
 
-每个新系统只需完成一次准备：把仓库克隆到 `Server` 文件夹，并提供 `compose.yaml`（或兼容的 Compose 文件）及所需的 `.env`。之后管理器会自动发现它，无需修改管理器代码。
+新系统不会被自动发现。先把仓库克隆到 `Server` 下，准备 Compose、`.env`、健康接口和 CI，
+再给 `projects.json` 增加一条显式配置并通过 PR 审核。这样可防止下载目录或实验项目被意外
+当作生产服务运行。
+
+## 本地验证
+
+Windows PowerShell 5.1：
+
+```powershell
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File .\tests\run-tests.ps1
+```
+
+测试不连接真实 Docker、GitHub 或正式数据。

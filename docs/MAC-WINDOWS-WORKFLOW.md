@@ -1,111 +1,104 @@
 # Mac 与 Windows Server 协作说明
 
-这套环境把开发、代码审核和正式运行分开。Mac 负责开发，GitHub 保存和审核代码，
-Windows 负责长期运行。以下约定适用于 InfoHub，也适用于以后放到 Windows 上的其他系统。
-
-## 整体关系
+这套环境把开发、审核、发布和运行分开。Mac 负责开发，GitHub 保存代码与检查记录，Windows
+负责长期运行，Windows Server Manager 负责把通过门禁的固定版本变成 Docker 服务。
 
 ```text
-Mac 开发与测试
-      │ 推送功能分支
-      ▼
-GitHub Pull Request（修改说明、差异、自动测试）
-      │ 检查通过并合并
-      ▼
-GitHub main（可部署的正式版本）
-      │ Windows 每 5 分钟检查
-      ▼
-Windows Server Manager → Docker 构建并运行
-      │
-      ▼
+Mac 功能分支与测试
+        │ push
+        ▼
+GitHub Pull Request ── 自动检查、差异与审核
+        │ merge
+        ▼
+GitHub main 的固定 SHA
+        │ 每 5 分钟检查一次；只接受所需检查全部成功的 SHA
+        ▼
+Windows Server Manager ── 隔离构建 ── 连续健康检查 ── 健康版本
+        │                                      │失败
+        ▼                                      └── 回滚已保存镜像
+Docker 中的正式服务与 Windows 正式数据
+        │
+        ▼
 Mac、手机等设备通过 Tailscale 私有访问
 ```
 
-## 各部分的任务
+## 各部分的职责
 
-### Mac：开发端
+### Mac
 
-- 阅读和修改代码。
-- 在独立功能分支上完成一个明确任务。
-- 运行测试、页面检查和数据副本验证。
-- 把功能分支推送到 GitHub 并创建 PR。
-- 不把 Mac 的开发数据库当作正式数据。
+- 在 `codex/<任务>` 功能分支上修改代码并运行离线测试；
+- 一个可独立审核和回滚的工作单元对应一个 PR；
+- 提交并推送代码，查看 PR 差异和自动检查；
+- 不把 Mac 开发数据库当成正式数据。
 
-Mac 上保存文件不会自动改变 Windows。代码必须提交并推送到 GitHub；只有合并到
-`main` 的版本才会进入正式服务器。
+Mac 保存文件不会直接改变 Windows。只有提交被推送、PR 合并到 `main`，且该 SHA 的指定
+检查全部成功，才具备自动发布资格。
 
-### GitHub：代码中心与审核记录
+### GitHub
 
-- 保存仓库、分支、提交历史和 PR。
-- 在 PR 中展示改了什么、为什么改、测试是否通过。
-- `main` 始终代表准备部署的正式代码。
-- 不负责运行网站，也不保存生产数据库和 `.env` 密钥。
+- 保存仓库、提交、PR、审核和 CI 结果；
+- `main` 表示允许部署的代码序列；
+- 不运行正式网站，也不保存生产数据库或 `.env`。
 
-### Windows：生产服务器
+如果仓库套餐无法强制 branch protection，发布管理器仍会在 Windows 侧逐个核对固定 SHA 的
+检查结果。这是第二道门禁，不能替代 PR 审核。
 
-- 使用 `serveradmin` 账户长期运行 Docker Desktop、Tailscale 和自动部署。
-- 每个系统位于 `C:\Users\serveradmin\Server` 下的独立文件夹。
-- 保存正式数据库、上传文件、运行日志和每个项目自己的 `.env`。
-- 锁屏不会停止服务；注销 `serveradmin` 会停止依赖该登录会话的 Docker Desktop 和自动部署。
+### Windows 与 Docker
 
-### Windows Server Manager：部署端
+- `serveradmin` 长期运行 Docker Desktop、Tailscale 和自动发布观察器；
+- 正式数据库、上传文件和每个项目的 `.env` 保存在项目目录；
+- 锁屏不停止服务；注销该账户会停止依赖登录会话的 Docker Desktop 和观察器；
+- 每个运行版本都应在健康接口报告准确提交 SHA。
 
-- 自动发现 `Server` 下带 Docker Compose 配置的项目。
-- 每 5 分钟检查项目当前 Git 分支的远端版本。
-- 发现 `main` 有新提交后执行安全的 fast-forward 拉取、Docker 构建和重启。
-- 项目存在未提交修改或分支发生分叉时跳过部署，避免覆盖文件。
-- 自动部署日志位于 `manager\logs\auto-deploy.log`。
+### Windows Server Manager
 
-### Tailscale：私有连接
+- 只管理 `projects.json` 显式登记的项目和 `main`；
+- 拒绝 dirty、错分支、分叉和 CI 未通过的检出；
+- 跟踪目标 SHA 与最后健康 SHA，同一失败 SHA 可以重试；
+- 在隔离目录构建固定 SHA，保存旧镜像，再切换并检查新版本；
+- 自动和手动命令共用项目锁；三次失败暂停，回滚失败进入人工恢复状态。
 
-- 给自己的设备提供加密的私人网络。
-- Mac 通过 Windows 的 Tailscale IP 访问正式网站。
-- Tailscale 不同步代码、不保存数据，也不执行部署。
+### Tailscale
 
-InfoHub 当前正式入口：`http://100.69.211.16:8000/`。
-Windows 本机也可以使用 `http://localhost:8000/`。
+Tailscale只提供设备间的加密私人网络。它不传代码、不保存 InfoHub 数据、不执行发布。InfoHub
+目前的私人入口是 `http://100.69.211.16:8000/`，Windows 本机可用
+`http://localhost:8000/`。
 
-## PR 工作流程
+## 一次正常 PR 到生产的过程
 
-PR 是 Pull Request，即一组准备合并到正式版本的修改及其审核记录。一个明确的功能、
-修复或底层逻辑调整通常对应一个 PR。
+1. 从正确基线建立功能分支，完成一个明确改动和对应测试。
+2. 推送分支并创建 PR；开发分支不会自动进入 Windows。
+3. 自动检查通过，审核差异，然后把 PR 合并到 `main`。
+4. 发布观察器发现新的 `main` SHA，确认检出、fast-forward 关系和全部指定检查。
+5. 在隔离 worktree 构建候选镜像；构建失败不会移动正式检出。
+6. 保存当前容器镜像，切换正式检出，运行已批准的迁移 hook（如果配置），再启动候选镜像。
+7. 健康接口连续通过且返回目标版本后，状态写为 `healthy`。
+8. 如果启动或健康检查失败，管理器恢复原检出和保存的旧镜像；回滚也失败则停止自动操作。
 
-1. 从最新 `main` 创建 `codex/<任务名称>` 分支。
-2. 完成修改，并运行与改动相关的测试。
-3. 提交并推送该分支。
-4. 创建 PR，写明问题、修改后的行为和验证结果。
-5. 检查代码差异与自动测试。
-6. 通过后把 PR 合并到 `main`。
-7. Windows 自动部署程序在约 5 分钟内发现新提交并更新项目。
-8. 通过项目健康接口或页面核对运行版本和状态。
+## 如何验收 InfoHub
 
-开发分支和未合并 PR 不会部署到 Windows。小型文案修正也可以走 PR；紧急且风险很低的
-修复可以直接提交 `main`，但应保持例外而非常态。
-
-## InfoHub 的验收方式
-
-- 健康页面：`http://100.69.211.16:8000/health`
+- 门户：`http://100.69.211.16:8000/`
+- 健康页：`http://100.69.211.16:8000/health`
 - 机器接口：`http://100.69.211.16:8000/api/health`
-- 接口中的 `version` 应等于 GitHub `main` 最新提交的前 12 位。
-- 同时检查信息源异常数、AI 待处理量、主题/事件索引队列和最新日报日期。
+- 接口中的 `version` 必须等于 GitHub `main` 目标 SHA（完整值或约定的前 12 位）。
 
-如果 GitHub 已合并但版本长时间没有变化，依次检查：
+还需检查采集、AI、主题/事件队列和日报是否新鲜。网页能打开只证明 web 存活，不证明信息
+流水线健康；InfoHub P05 会进一步拆分 live、ready 和 pipeline 状态。
 
-1. Windows 的 `serveradmin` 是否仍处于登录状态。
-2. Docker Desktop 和 Tailscale 是否正常运行。
-3. Windows Server Manager 是否显示 `Automatic deployment: enabled and running`。
-4. `manager\logs\auto-deploy.log` 是否记录拉取或构建错误。
+发布没有发生时，依次检查管理器显示的状态、`state\infohub.json`、
+`logs\auto-deploy.log`、Docker Desktop 和 Tailscale。不要先删除数据库或执行 Compose down
+的卷删除选项。
 
-## 数据与密钥边界
+## 数据和密钥边界
 
-- 代码进入 GitHub；正式数据库和 `.env` 不进入 GitHub。
-- Docker 重建不会删除映射到项目 `data` 文件夹的数据。
-- 每个项目单独保存自己的 `.env`，管理器不集中复制密钥。
-- 数据库迁移前先备份；部署工具负责更新程序，不代替数据备份。
-- Windows 是正式数据源。Mac 上的数据只用于开发、测试或经过确认的迁移。
+- 代码进入 GitHub；生产数据库、原始材料、上传文件和 `.env` 不进入 GitHub；
+- 管理器不复制数据库到候选 worktree，Docker 重建不得删除项目数据映射；
+- 数据迁移由项目自己的受测命令完成，部署管理器只提供受控 hook；
+- 正式迁移前必须有一致性备份、恢复验证和副本演练；
+- Windows 是正式数据源，Mac 数据只用于开发、测试或经确认的一次迁移。
 
 ## 新项目接入
 
-新项目第一次接入仍需完成初始化：克隆到 `Server` 文件夹、准备 Compose 配置、创建
-`.env`、初始化数据并验证端口。完成这一次准备后，管理器会自动发现项目，后续合并到
-该项目正式分支的更新可以沿用相同的自动部署流程。
+新项目第一次仍需初始化：克隆仓库、准备 Compose 和 `.env`、分配端口、建立带版本的健康
+接口、定义 CI 与回滚条件。之后在 `projects.json` 显式登记并用测试 PR 验证一次失败与恢复，
+才能开启自动发布。不同项目的数据和密钥继续各自保存。

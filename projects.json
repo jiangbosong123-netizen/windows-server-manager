@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "projects": [
+    {
+      "id": "infohub",
+      "enabled": true,
+      "path": "infohub",
+      "repository": "jiangbosong123-netizen/infohub",
+      "remote": "origin",
+      "deployBranch": "main",
+      "composeFile": "compose.yaml",
+      "composeProject": "infohub",
+      "runtimeFiles": [".env"],
+      "requiredChecks": ["regression (3.11)", "regression (3.12)", "docker"],
+      "healthChecks": [
+        {
+          "name": "web",
+          "url": "http://127.0.0.1:8000/api/health",
+          "versionField": "version"
+        }
+      ],
+      "healthTimeoutSeconds": 180,
+      "healthIntervalSeconds": 10,
+      "healthSuccessesRequired": 3,
+      "retryMinutes": [5, 15, 30],
+      "migrationHook": null
+    }
+  ]
+}
