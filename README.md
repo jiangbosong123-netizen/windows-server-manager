@@ -1,50 +1,73 @@
 # Windows Server Manager
 
-这是 Windows 常驻电脑的独立项目管理器。它与 InfoHub 以及其他业务系统分开，自动识别同级目录中带有 Docker Compose 配置的项目。
+A small deployment manager for an always-on Windows host running several Dockerised
+services. It **auto-discovers** sibling projects, keeps them up to date from their GitHub
+branches, and refuses to do so when that would overwrite work.
 
-Mac 开发、GitHub PR、Windows 正式运行、Tailscale 访问及数据边界的完整约定见
-[Mac 与 Windows Server 协作说明](docs/MAC-WINDOWS-WORKFLOW.md)。
+Written in PowerShell, about 300 lines. It exists because unattended deployment has a
+short list of ways to go badly wrong, and each one needs an explicit guard.
 
-建议目录结构：
+> 中文文档见 [README.zh-CN.md](./README.zh-CN.md)。
 
-```text
-C:\Users\serveradmin\Server\
-├── manager\          本仓库
-├── infohub\          InfoHub
-└── another-project\  以后的其他系统
+---
+
+## Layout
+
+```
+C:\Users\<user>\Server\
+├── manager\           this repository
+├── infohub\           a service
+└── another-project\   any other service
 ```
 
-## 第一次安装
+Any sibling directory that contains **both** a `.git` directory and a Compose file
+(`compose.yaml`, `compose.yml`, `docker-compose.yml`, `docker-compose.yaml`) is picked up
+automatically. Adding a service needs no change to the manager.
 
-1. 在 GitHub Desktop 中克隆本仓库。
-2. Local path 选择 `C:\Users\serveradmin\Server\manager`。
-3. 双击 `create-desktop-shortcut.cmd`，桌面会出现 **Windows Server Manager**。
+## Install
 
-以后双击桌面入口即可管理所有项目。管理器启动时会先尝试更新自己；没有网络时仍会使用现有版本打开。
+Clone into `Server\manager`, then double-click `create-desktop-shortcut.cmd`. The manager
+updates itself on launch, and falls back to the installed version when offline.
 
-## 菜单功能
+## Menu
 
-- 查看所有项目和容器状态
-- 拉取某个项目的最新代码并重新部署
-- 启动、停止或重启某个项目
-- 查看最近 100 行日志
-- 一次更新并部署全部项目
-- 开启或关闭后台自动部署
+View project and container status · pull and redeploy one project · start / stop / restart
+· tail the last 100 log lines · update and deploy everything · enable or disable background
+auto-deployment.
 
-部署时会把项目当前的 Git 提交号传给 Docker。支持该字段的系统可以在健康页显示正在运行的准确版本。
+Each deployment passes the project's current Git commit SHA to Docker, so a service that
+supports it can report the exact running version on its health page.
 
-## 自动部署
+## Automatic deployment
 
-在管理器中选择 **8. Enable automatic deployment** 一次即可。它会随 `serveradmin`
-登录 Windows 自动启动，每 5 分钟检查同级项目的 GitHub 分支。发现远端有新提交后，
-自动执行安全的 fast-forward 拉取并重新构建容器。锁屏不影响运行；需要保持该 Windows
-用户登录，Docker Desktop 和 Tailscale 正常运行。
+Enabled once from the menu; starts with the user's Windows session and polls each sibling
+project's branch every five minutes. New upstream commits trigger a fast-forward pull and
+a container rebuild. Locking the screen does not interrupt it.
 
-如果项目目录存在未提交的本地代码，或本地与 GitHub 分支分叉，自动部署会跳过该项目，
-避免覆盖文件。记录保存在 `manager\logs\auto-deploy.log`。菜单 9 可以关闭自动部署。
+**What it refuses to do.** If a project has uncommitted local changes, or its branch has
+diverged from the remote, that project is **skipped** — no pull, no rebuild, nothing
+overwritten. The skip is logged.
 
-项目数据和 `.env` 仍留在各自的项目目录中。停止项目不会删除数据。更新前如果发现业务代码有本地修改，管理器会取消拉取，防止覆盖文件。
+## Guards
 
-## 新增系统
+Each of these is here because it is a specific way an unattended loop can fail:
 
-每个新系统只需完成一次准备：把仓库克隆到 `Server` 文件夹，并提供 `compose.yaml`（或兼容的 Compose 文件）及所需的 `.env`。之后管理器会自动发现它，无需修改管理器代码。
+| Guard | Failure it prevents |
+|---|---|
+| Fast-forward only, skip on divergence or dirty tree | Silently discarding work that only exists on the host |
+| Named mutex, with abandoned-mutex handling | Two runs deploying at once, and a permanent deadlock if a holder dies |
+| `GIT_TERMINAL_PROMPT=0` | A credential prompt hanging the loop forever with no terminal attached |
+| Log rotation at 2 MB | Filling the disk over months of running |
+| PID file | Not knowing whether the loop is alive |
+| Docker readiness check | Thrashing while Docker Desktop is still starting |
+
+Logs are written to `manager\logs\auto-deploy.log`.
+
+## Boundaries
+
+Project data and each service's `.env` stay in the project directory; the manager never
+touches them, and stopping a service does not delete its data. The manager only ever
+performs fast-forward pulls and Compose rebuilds — it has no path that rewrites history or
+force-updates a working tree.
+
+It assumes the Windows user stays logged in, and that Docker Desktop is running.
